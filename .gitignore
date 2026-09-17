@@ -1,0 +1,18 @@
+# ESP-IDF build files
+build/
+
+# ESP-IDF local config
+sdkconfig
+sdkconfig.old
+
+# Python/virtual env stuff
+venv/
+.env
+
+# Editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
