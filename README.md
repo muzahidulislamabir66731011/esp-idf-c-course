@@ -104,12 +104,12 @@ Goal: Understand the ESP32 hardware, the FreeRTOS environment, and basic digital
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 1 | Hello ESP32 | `projects/01_hello_esp32` | Toolchain setup, serial logging, `ESP_LOG`, `app_main()` lifecycle |
-| 2 | Digital Output | `projects/02_digital_output` | GPIO output, push-pull configuration, driving an LED, 3.3V logic |
-| 3 | Infinite Loop & Timing | `projects/03_task_delay_timing` | FreeRTOS `vTaskDelay()`, blocking vs yielding |
-| 4 | Digital Input | `projects/04_digital_input` | Reading buttons, pull-up and pull-down resistors |
-| 5 | Interrupts & Debouncing | `projects/05_interrupts_debounce` | ISR basics, GPIO interrupts, software debouncing |
-| 6 | Finite State Machines | `projects/06_finite_state_machines` | Enums, state logic, `switch` statements, multi-state behavior |
+| 1 | Hello ESP32 | - | Toolchain setup, serial logging, `ESP_LOG`, `app_main()` lifecycle |
+| 2 | Digital Output | - | GPIO output, push-pull configuration, driving an LED, 3.3V logic |
+| 3 | Infinite Loop & Timing | - | FreeRTOS `vTaskDelay()`, blocking vs yielding |
+| 4 | Digital Input | - | Reading buttons, pull-up and pull-down resistors |
+| 5 | Interrupts & Debouncing | - | ISR basics, GPIO interrupts, software debouncing |
+| 6 | Finite State Machines | - | Enums, state logic, `switch` statements, multi-state behavior |
 
 ---
 
@@ -119,10 +119,10 @@ Goal: Bridge the gap between digital logic and the physical, continuous world.
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 7 | Analog-to-Digital Conversion | `projects/07_adc_basics` | ADC reading, resolution, attenuation, sensors like potentiometers |
-| 8 | Pulse Width Modulation | `projects/08_pwm_ledc` | LEDC peripheral, duty cycle, LED brightness control |
-| 9 | Digital-to-Analog Conversion | `projects/09_dac_waveforms` | DAC output, voltage levels, basic waveform generation |
-| 10 | Hardware Timers | `projects/10_hardware_timers` | Microsecond precision timers, periodic callbacks, sampling |
+| 7 | Analog-to-Digital Conversion | - | ADC reading, resolution, attenuation, sensors like potentiometers |
+| 8 | Pulse Width Modulation | - | LEDC peripheral, duty cycle, LED brightness control |
+| 9 | Digital-to-Analog Conversion | - | DAC output, voltage levels, basic waveform generation |
+| 10 | Hardware Timers | - | Microsecond precision timers, periodic callbacks, sampling |
 
 ---
 
@@ -132,10 +132,10 @@ Goal: Learn how microcontrollers talk to external chips using industry-standard 
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 11 | I2C Master Basics | `projects/11_i2c_master` | I2C bus scanning, reading sensors, addressing, clocking |
-| 12 | SPI Master Basics | `projects/12_spi_master` | SPI communication, high-speed transfers, SPI devices |
-| 13 | OLED Display | `projects/13_oled_display` | SSD1306, I2C display, rendering text and sensor data |
-| 14 | Audio Generation | `projects/14_audio_tones` | Timers, PWM/DAC, tone generation, simple beeps |
+| 11 | I2C Master Basics | - | I2C bus scanning, reading sensors, addressing, clocking |
+| 12 | SPI Master Basics | - | SPI communication, high-speed transfers, SPI devices |
+| 13 | OLED Display | - | SSD1306, I2C display, rendering text and sensor data |
+| 14 | Audio Generation | - | Timers, PWM/DAC, tone generation, simple beeps |
 
 ---
 
@@ -145,9 +145,9 @@ Goal: Apply software engineering concepts to physical data.
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 15 | Bitwise Operations | `projects/15_bitwise_operations` | Masks, shifting, packing/unpacking data |
-| 16 | Non-Volatile Storage | `projects/16_nvs_storage` | Saving data to flash, reboot persistence |
-| 17 | File Systems | `projects/17_filesystem_littlefs` | LittleFS/SPIFFS, file creation, appending logs, CSV storage |
+| 15 | Bitwise Operations | - | Masks, shifting, packing/unpacking data |
+| 16 | Non-Volatile Storage | - | Saving data to flash, reboot persistence |
+| 17 | File Systems | - | LittleFS/SPIFFS, file creation, appending logs, CSV storage |
 
 ---
 
@@ -157,10 +157,10 @@ Goal: Stop using “magic” libraries and build your own communication protocol
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 18 | UART Basics | `projects/18_uart_basics` | Serial communication, TX/RX, ESP32-to-ESP32 or ESP32-to-PC |
-| 19 | Custom Frame Design | `projects/19_custom_frame` | Binary packets, header, length, payload |
-| 20 | Error Detection | `projects/20_error_detection` | Checksums, CRC8, corrupted packet detection |
-| 21 | Reliable Transfer | `projects/21_reliable_transfer` | Sequence numbers, ACKs, retransmission logic |
+| 18 | UART Basics | - | Serial communication, TX/RX, ESP32-to-ESP32 or ESP32-to-PC |
+| 19 | Custom Frame Design | - | Binary packets, header, length, payload |
+| 20 | Error Detection | - | Checksums, CRC8, corrupted packet detection |
+| 21 | Reliable Transfer | - | Sequence numbers, ACKs, retransmission logic |
 
 ---
 
@@ -170,12 +170,12 @@ Goal: Connect the ESP32 to the world using standard IP networking.
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 22 | Wi-Fi Station Mode | `projects/22_wifi_station` | Connecting to a router, events, IP address assignment |
-| 23 | Wi-Fi Access Point Mode | `projects/23_wifi_ap` | Broadcasting an SSID, assigning IPs to clients |
-| 24 | TCP Sockets | `projects/24_tcp_sockets` | Reliable streams, TCP client/server |
-| 25 | UDP Sockets | `projects/25_udp_sockets` | Connectionless packets, packet loss observation |
-| 26 | SNTP Time Sync | `projects/26_sntp_time` | Fetching real-world UTC time from NTP servers |
-| 27 | HTTP & REST APIs | `projects/27_http_rest_server` | Web server, JSON sensor endpoints, HTTP basics |
+| 22 | Wi-Fi Station Mode | - | Connecting to a router, events, IP address assignment |
+| 23 | Wi-Fi Access Point Mode | - | Broadcasting an SSID, assigning IPs to clients |
+| 24 | TCP Sockets | - | Reliable streams, TCP client/server |
+| 25 | UDP Sockets | - | Connectionless packets, packet loss observation |
+| 26 | SNTP Time Sync | - | Fetching real-world UTC time from NTP servers |
+| 27 | HTTP & REST APIs | - | Web server, JSON sensor endpoints, HTTP basics |
 
 ---
 
@@ -185,10 +185,8 @@ Goal: Optimize for battery life and explore long-range, non-IP communication.
 
 | # | Project | Folder | Concepts |
 |---|---|---|---|
-| 28 | Deep Sleep & Wake Sources | `projects/28_deep_sleep` | RTC, ULP, GPIO wake, timer wake |
-| 29 | BLE Basics | `projects/29_ble_gatt` | BLE GATT server, services, characteristics |
-| 30 | LoRa PHY Basics | `projects/30_lora_phy` | Raw packet transmission, SX127x/SX1262 |
-| 31 | LoRa Link Quality | `projects/31_lora_link_quality` | RSSI, SNR, signal quality logging |
-| 32 | LoRa Reliable Network | `projects/32_lora_reliable_network` | Reliable protocol over LoRa, node/mesh-style concepts |
-
----
+| 28 | Deep Sleep & Wake Sources | - | RTC, ULP, GPIO wake, timer wake |
+| 29 | BLE Basics | - | BLE GATT server, services, characteristics |
+| 30 | LoRa PHY Basics | - | Raw packet transmission, SX127x/SX1262 |
+| 31 | LoRa Link Quality | - | RSSI, SNR, signal quality logging |
+| 32 | LoRa Reliable Network | - | Reliable protocol over LoRa, node/mesh-style concepts |
