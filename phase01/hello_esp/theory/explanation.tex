@@ -1,0 +1,534 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{hyperref}
+
+\hypersetup{
+    hidelinks
+}
+
+\begin{document}
+
+\section*{Understanding the Include Files}
+
+At the top of our \texttt{main.c} file, we include several header files. These files tell the compiler where to find the functions and data types we are using.
+
+Before diving into the specific files, it is helpful to understand the difference between the two types of includes:
+
+\begin{itemize}
+    \item \texttt{\#include <filename.h>} (Angle brackets): Tells the compiler to look in the \textbf{standard system directories}. These are provided by the C compiler toolchain.
+    
+    \item \texttt{\#include "filename.h"} (Quotation marks): Tells the compiler to look in the \textbf{local project or framework directories}. These are provided by ESP-IDF.
+\end{itemize}
+
+Here is a breakdown of the four headers used in Project~1:
+
+\subsection*{1. \texttt{\#include <stdio.h>}}
+
+\textbf{The Standard Input/Output Library}
+
+This is a standard C library provided by the compiler toolchain, not by ESP-IDF. It provides standard input and output functions, most notably \texttt{printf()}.
+
+\textbf{A common misconception:} Many beginners think \texttt{printf} is a core keyword built into the C language. It is not. It is simply a function provided by \texttt{stdio.h}. In true ``bare-metal'' programming without an operating system, \texttt{printf} does not work out of the box; you would have to write a low-level UART hardware driver from scratch just to send text characters to a serial monitor! Fortunately, ESP-IDF sets up the serial port for us behind the scenes so \texttt{stdio.h} works immediately.
+
+\emph{(Note: In future advanced projects, we will look at how data actually travels from the chip to the screen!)}
+
+\subsection*{2. \texttt{\#include "freertos/FreeRTOS.h"}}
+
+\textbf{The Core RTOS Header}
+
+The ESP32 does not just run your code directly on the hardware; it runs an operating system called \textbf{FreeRTOS} (Free Real-Time Operating System). This header file is the core of that operating system.
+
+It provides the fundamental configuration, macros, and core data types (like \texttt{TickType\_t} for measuring time) that the rest of the system relies on. Without an RTOS, creating a simple non-blocking delay or managing multiple sensors at once would require writing incredibly complex, low-level timer interrupt code. FreeRTOS handles all of this heavy lifting for us.
+
+\subsection*{3. \texttt{\#include "freertos/task.h"}}
+
+\textbf{The Task Management API}
+
+While \texttt{FreeRTOS.h} provides the core data types, \texttt{task.h} provides the actual functions used to manage \textbf{Tasks} (independent threads of execution).
+
+This is where we get essential functions like:
+
+\begin{itemize}
+    \item \texttt{vTaskDelay()} --- to pause a task and yield the CPU.
+    
+    \item \texttt{xTaskCreate()} --- to create new background tasks (which we will use in later projects).
+\end{itemize}
+
+\textbf{Why are they paired?}
+
+\texttt{task.h} relies heavily on the data types and configurations defined inside \texttt{FreeRTOS.h}. Therefore, you will almost always see these two included together at the top of an ESP-IDF file. If you omit \texttt{FreeRTOS.h} and only include \texttt{task.h}, the compiler will throw errors because it won't understand the basic FreeRTOS types.
+
+\emph{(Note: ESP-IDF uses a special function called \texttt{app\_main()} as the entry point for your code. When the ESP32 boots, ESP-IDF initializes FreeRTOS and automatically launches \texttt{app\_main()} as the very first FreeRTOS task!)}
+
+\subsection*{4. \texttt{\#include "esp\_log.h"}}
+
+\textbf{The ESP-IDF Logging Framework}
+
+While \texttt{printf()} is great for simple text, \texttt{esp\_log.h} provides a professional, multi-level logging system specifically designed for embedded debugging.
+
+Instead of just printing raw text, it allows you to categorize your messages by severity and attach a ``TAG'' (a label identifying which part of the code is speaking). It also automatically adds a timestamp to every message.
+
+The available log levels, from most severe to least severe, are shown in Table~\ref{tab:esp-log-levels}.
+
+\begin{table}[!htbp]
+\centering
+\small
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{@{}c l X@{}}
+\toprule
+\textbf{Level} & \textbf{Macro} & \textbf{Meaning} \\
+\midrule
+E & \texttt{ESP\_LOGE(TAG, "...")} & \textbf{Error:} Critical failures (e.g., a sensor failed to initialize). \\
+W & \texttt{ESP\_LOGW(TAG, "...")} & \textbf{Warning:} Unusual events, but the system can recover. \\
+I & \texttt{ESP\_LOGI(TAG, "...")} & \textbf{Info:} Normal, expected status messages (e.g., ``System started''). \\
+D & \texttt{ESP\_LOGD(TAG, "...")} & \textbf{Debug:} Detailed information useful during development. \\
+V & \texttt{ESP\_LOGV(TAG, "...")} & \textbf{Verbose:} Extremely detailed, high-frequency tracing (usually disabled to save memory). \\
+\bottomrule
+\end{tabularx}
+\caption{ESP-IDF log levels}
+\label{tab:esp-log-levels}
+\end{table}
+
+Using \texttt{esp\_log} makes it much easier to filter out noise and find exactly what went wrong when your hardware misbehaves.
+
+\vspace{1em}
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{1em}
+
+\section*{Code Walkthrough: Line by Line}
+
+Let's break down the exact C code used in Project~1 to understand what is happening under the hood.
+
+\subsection*{ Defining the Log Tag}
+
+\begin{verbatim}
+static const char *TAG = "hello_esp32";
+\end{verbatim}
+
+This line creates a label that will be attached to our log messages. In embedded systems, you often have many different files printing to the same serial monitor. A ``TAG'' helps you identify exactly which file or module sent a specific message.
+
+Here is what each keyword and symbol means:
+
+\begin{itemize}
+    \item \textbf{\texttt{static}}: This restricts the scope of the variable to \emph{only this specific \texttt{.c} file}. If you have another file named \texttt{wifi.c} that also defines a variable named \texttt{TAG}, they will not conflict with each other.
+
+    \item \textbf{\texttt{const}}: Short for ``constant''. This tells the compiler that the text \texttt{"hello\_esp32"} will never change.
+    \begin{itemize}
+        \item \emph{Embedded Pro-Tip:} Because it is constant, the ESP32 compiler will store this string in read-only Flash memory instead of precious, limited RAM. This is a crucial habit in embedded C!
+    \end{itemize}
+
+    \item \textbf{\texttt{char *}} (Pointer to char): In the C language, there is no native ``String'' object. Instead, text is represented as an array of characters.
+    \begin{enumerate}
+        \item \texttt{char} --- A single character.
+        \item \texttt{*} --- Indicates that \texttt{TAG} is a \textbf{pointer}. It does not contain the string itself; it contains the memory \emph{address} pointing to the first character of the string.
+        \item \texttt{"hello\_esp32"} --- A string literal, stored somewhere in memory.
+    \end{enumerate}
+\end{itemize}
+
+Conceptually, it looks like this:
+
+\begin{verbatim}
+TAG (Memory Address) -- points to --> "hello_esp32" (Actual Text in Flash)
+\end{verbatim}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{ The Entry Point}
+
+\begin{verbatim}
+void app_main(void)
+\end{verbatim}
+
+This is the most important function in any ESP-IDF application.
+
+\begin{itemize}
+    \item In standard desktop C programming, a program starts at a function called \texttt{main()}.
+    
+    \item However, the ESP32 runs an operating system (FreeRTOS). When the ESP32 powers on, the system initializes the hardware and the RTOS in the background. Once everything is ready, FreeRTOS automatically launches \textbf{\texttt{app\_main()}} as the primary background task.
+\end{itemize}
+
+Breaking down the syntax:
+
+\begin{itemize}
+    \item \textbf{\texttt{void}} (the first one): Means this function does not return any data back to the operating system when it finishes.
+    
+    \item \textbf{\texttt{(void)}} (the second one): Means this function does not take any input arguments.
+\end{itemize}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{ Standard Console Output}
+
+\begin{verbatim}
+printf("Hello ESP32!\n");
+\end{verbatim}
+
+\begin{itemize}
+    \item \textbf{\texttt{printf}}: The standard C function for printing formatted text, provided by \texttt{\textless stdio.h\textgreater}.
+    
+    \item \textbf{\texttt{\textbackslash{}n}}: This is an ``escape character'' that represents a \textbf{newline}. It tells the serial monitor to move the cursor down to the next line. If you omit \texttt{\textbackslash{}n}, the next piece of text will print on the exact same line, making your output messy and hard to read.
+\end{itemize}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{ Embedded Logging vs. Standard Printing}
+
+\begin{verbatim}
+ESP_LOGI(TAG, "Project 01 is running");
+\end{verbatim}
+
+This uses the ESP-IDF logging framework. But why not just use \texttt{printf} here?
+
+If you use standard printing:
+
+\begin{verbatim}
+printf("Project 01 is running\n");
+\end{verbatim}
+
+It just gives you raw text:
+
+\begin{verbatim}
+Project 01 is running
+\end{verbatim}
+
+Whereas using the ESP-IDF logger:
+
+\begin{verbatim}
+ESP_LOGI(TAG, "Project 01 is running");
+\end{verbatim}
+
+Gives you rich, structured data:
+
+\begin{verbatim}
+I (1234) hello_esp32: Project 01 is running
+\end{verbatim}
+
+The extra information becomes incredibly useful when your program gets large and you have dozens of files printing messages at the same time. Here is what the output means:
+
+\begin{itemize}
+    \item \textbf{\texttt{I}}: Stands for \textbf{Information}. It represents the log level, showing that this is a routine status update (other levels include \texttt{E} for Error, \texttt{W} for Warning, etc.).
+    
+    \item \textbf{\texttt{(1234)}}: The system has been running for 1234 milliseconds.
+    
+    \item \textbf{\texttt{hello\_esp32}}: Our TAG, identifying which file sent the message.
+    
+    \item \textbf{\texttt{Project 01 is running}}: Our actual message.
+\end{itemize}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Creating a Counter Variable}
+
+\begin{verbatim}
+int count = 0;
+\end{verbatim}
+
+Before we enter our infinite loop, we need a way to track how many seconds have passed.
+
+\begin{itemize}
+    \item \textbf{\texttt{int}}: A standard C integer (a whole number). On the 32-bit ESP32 architecture, a standard \texttt{int} is 32 bits (4 bytes) wide.
+    
+    \item \textbf{\texttt{count}}: The name of our variable.
+    
+    \item \textbf{\texttt{= 0}}: We initialize it to zero.
+\end{itemize}
+
+\textbf{Understanding Integer Ranges in C:}
+
+Because an \texttt{int} is 32 bits on the ESP32, it has specific mathematical limits:
+
+\begin{itemize}
+    \item \textbf{Signed \texttt{int} (Default):} Can hold negative and positive numbers.
+    \begin{itemize}
+        \item \emph{Range:} $-2^{31}$ to $2^{31} - 1$ \textbf{( -2,147,483,648 to 2,147,483,647 )}
+    \end{itemize}
+
+    \item \textbf{Unsigned \texttt{int}:} Can only hold positive numbers (zero and above), but has a higher maximum limit.
+    \begin{itemize}
+        \item \emph{Range:} $0$ to $2^{32} - 1$ \textbf{( 0 to 4,294,967,295 )}
+    \end{itemize}
+\end{itemize}
+
+\emph{Embedded Pro-Tip:} Because our counter will never be negative, we could technically optimize this by using \texttt{unsigned int count = 0;}. However, for simple, small numbers like a 1-second blink counter, a standard \texttt{int} is perfectly fine and is the most common default in C.
+
+\textbf{Crucial Concept for Beginners:} Notice that this line is placed \emph{outside} and \emph{above} the \texttt{while(1)} loop. This means it only executes \textbf{once} when the program starts. If we accidentally placed \texttt{int count = 0;} \emph{inside} the loop, the ESP32 would reset the counter back to zero every single second, and it would never count up!
+\subsection*{Why use \texttt{while (1)}?}
+
+\begin{verbatim}
+while (1)
+{
+    ...
+}
+\end{verbatim}
+
+In C, \texttt{while (1)} creates an \textbf{infinite loop}. Since \texttt{1} is always considered true, the code inside the loop continues executing repeatedly until something explicitly stops or interrupts it.
+
+But why is this useful on an ESP32?
+
+Think about the difference between a normal computer program and an embedded system.
+
+A \textbf{normal desktop program} is often designed to perform a task and then finish:
+
+\begin{verbatim}
+Start
+  |
+  v
+Do some work
+  |
+  v
+Finish
+  |
+  v
+Exit
+\end{verbatim}
+
+An \textbf{embedded program} is usually designed to control or monitor something continuously:
+
+\begin{verbatim}
+Start
+  |
+  v
+Initialize hardware
+  |
+  v
++-> Read sensor
+|     |
+|     v
+|   Process data
+|     |
+|     v
+|   Control hardware
+|     |
+|     v
++-----+  (repeat)
+\end{verbatim}
+
+For example, an ESP32 might need to:
+
+\begin{itemize}
+    \item continuously read a sensor,
+    \item check whether a button was pressed,
+    \item update a display,
+    \item communicate with another device,
+    \item control an LED or motor.
+\end{itemize}
+
+So instead of doing the work once and stopping, the program repeatedly performs its main tasks:
+
+\begin{verbatim}
+while (1)
+{
+    read_sensor();
+    process_data();
+    update_output();
+}
+\end{verbatim}
+
+\subsubsection*{Another way to think about it}
+
+An embedded program is often less like a \textbf{calculator} and more like a \textbf{control system}.
+
+A calculator might do:
+
+\begin{verbatim}
+input -> calculation -> result -> stop
+\end{verbatim}
+
+But a temperature-monitoring ESP32 needs to do:
+
+\begin{verbatim}
+measure -> decide -> act -> measure -> decide -> act -> ...
+\end{verbatim}
+
+The infinite loop provides that continuous cycle.
+
+One important detail: \texttt{while (1)} does \textbf{not} mean the ESP32 is literally doing nothing except spinning forever. Inside the loop, the program performs useful work, and in an RTOS such as FreeRTOS, tasks can also delay or yield so that other tasks get CPU time.
+
+Also, if \texttt{app\_main()} reaches its end, it does not mean the entire ESP32 has ``nothing underneath it.'' The operating system and other system tasks continue to exist. The important point is that \textbf{your application's main logic has finished}, which is usually not what you want for a continuously operating device.
+
+So, in an ESP32 program, \texttt{while (1)} is commonly used to create the application's \textbf{continuous execution cycle}.
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Printing with format specifiers}
+
+\begin{verbatim}
+ESP_LOGI(TAG, "Count = %d", count);
+\end{verbatim}
+
+This line works like \texttt{printf()}, but with logging features added. The string \texttt{"Count = \%d"} is called a \textbf{format string}, and \texttt{\%d} is a \textbf{format specifier} --- a placeholder that says ``\emph{insert a signed decimal integer here.}'' The value of \texttt{count} is inserted into that placeholder at runtime:
+
+\begin{verbatim}
+I (1320) hello_esp32: Count = 0
+I (2320) hello_esp32: Count = 1
+I (3320) hello_esp32: Count = 2
+\end{verbatim}
+
+Other useful format specifiers you will meet later:
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Specifier} & \textbf{Meaning} & \textbf{Example value} \\
+\midrule
+\texttt{\%d} & Signed decimal integer & \texttt{-42}, \texttt{7} \\
+\texttt{\%u} & Unsigned decimal integer & \texttt{42} \\
+\texttt{\%x} & Hexadecimal integer & \texttt{2a} \\
+\texttt{\%s} & String (char pointer) & \texttt{"hello"} \\
+\texttt{\%c} & Single character & \texttt{A} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Embedded Pro-Tip:} The number of format specifiers must match the number of extra arguments. If you write \texttt{\%d} but forget to pass \texttt{count}, you will print garbage memory values --- a classic C bug.
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Pausing the task with \texttt{vTaskDelay()}}
+
+\begin{verbatim}
+vTaskDelay(pdMS_TO_TICKS(1000));
+\end{verbatim}
+
+This line pauses the current task for approximately \textbf{1000 milliseconds (1 second)}.
+
+Breaking it inside-out:
+
+\begin{itemize}
+    \item \textbf{\texttt{pdMS\_TO\_TICKS(1000)}} converts milliseconds into FreeRTOS \textbf{ticks}. FreeRTOS does not count milliseconds; it counts ticks. With the default tick rate of 100 Hz, one tick = 10 ms, so 1000 ms = 100 ticks. This macro does that math for you.
+    
+    \item \textbf{\texttt{vTaskDelay(...)}} tells FreeRTOS: ``\emph{this task does not need the CPU for the next 100 ticks.}''
+\end{itemize}
+
+This is the most important detail in the whole loop.
+
+\texttt{vTaskDelay()} does not just ``wait''. It \textbf{yields} the CPU, allowing other tasks (and the hidden system tasks that keep the ESP32 alive, like Wi-Fi and the idle task) to run.
+
+If you removed this line, your loop would run millions of times per second:
+
+\begin{itemize}
+    \item The serial monitor would be flooded with garbage-speed text.
+    \item Other tasks would never get CPU time.
+    \item The \textbf{task watchdog} would detect that the CPU is never yielded and would reset the ESP32.
+\end{itemize}
+
+So remember: \textbf{an infinite loop must always give the CPU back sometimes.} In FreeRTOS, that is what \texttt{vTaskDelay()} does.
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Why there is no \texttt{return 0;}}
+
+If you have written C on a computer before, this code should feel strange. Every desktop C program ends like this:
+
+\begin{verbatim}
+int main(void)
+{
+    ...
+    return 0;   // tell the OS: "I finished successfully"
+}
+\end{verbatim}
+
+But our ESP32 code has \textbf{no return statement at all}. Why?
+
+\textbf{Reason 1: There is no parent program waiting for an exit code.}
+
+On a PC, \texttt{return 0} sends an exit code to the operating system, which then cleans up memory and closes the program. On the ESP32, \texttt{app\_main()} runs as a FreeRTOS task. There is no shell or parent program waiting to receive an exit code.
+
+\textbf{Reason 2: \texttt{app\_main()} is declared \texttt{void}.}
+
+Look at the signature again:
+
+\begin{verbatim}
+void app_main(void)
+\end{verbatim}
+
+The first \texttt{void} means the function returns \textbf{nothing}. Writing \texttt{return 0;} here would not even compile correctly, because a \texttt{void} function cannot return a value.
+
+\textbf{Reason 3: Finishing would stop your application.}
+
+If \texttt{app\_main()} ever returned, the main FreeRTOS task would be deleted. FreeRTOS and the system tasks would continue to exist, but \textbf{your application's main logic would be gone}. The device would silently stop doing its job --- the firmware equivalent of a heart stopping.
+
+So in embedded C, the end of the program is not a \texttt{return} statement. The end of the program is \textbf{never}. The infinite loop replaces it:
+
+\begin{verbatim}
+Desktop C:    start -> work -> return 0 -> OS cleans up
+Embedded C:   start -> work -> loop forever -> until power is removed
+\end{verbatim}
+
+\textbf{Embedded Pro-Tip:} The only acceptable ``exit'' in firmware is a deliberate restart, such as \texttt{esp\_restart()}, which reboots the whole chip. Even then, the device comes back and starts looping again.
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\noindent \emph{This completes the full code walkthrough for Project 1. If you want, the next PDF section can be \textbf{expected serial output + common mistakes} (forgetting \texttt{\textbackslash{}n}, declaring \texttt{count} inside the loop, removing \texttt{vTaskDelay}).}
+
+\section*{Exercises}
+
+\subsection*{Exercise 1: Conditional Logging}
+\textbf{Task:} Print a warning message every 5th count using \texttt{ESP\_LOGW}.
+
+\textbf{Solution:}
+\begin{verbatim}
+while (1)
+{
+    if (count % 5 == 0)
+    {
+        ESP_LOGW(TAG, "Warning: reached count %d", count);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Count = %d", count);
+    }
+
+    count++;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+\end{verbatim}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Exercise 2: Infinite Countdown}
+\textbf{Task:} Print a countdown from 10 to 0, print ``Liftoff!'', then repeat forever.
+
+\textbf{Solution:}
+\begin{verbatim}
+while (1)
+{
+    for (int i = 10; i >= 0; i--)
+    {
+        ESP_LOGI(TAG, "T-minus %d", i);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    ESP_LOGI(TAG, "Liftoff!");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+}
+\end{verbatim}
+\end{document}
