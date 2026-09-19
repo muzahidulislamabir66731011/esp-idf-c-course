@@ -1,0 +1,964 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{caption}
+
+\hypersetup{
+    hidelinks
+}
+
+\begin{document}
+
+\section*{Background: Memory and the GPIO Driver}
+
+\textbf{Contents}
+\begin{enumerate}
+    \item The Memory Hierarchy
+    \item Why RAM Is Slower Than a CPU Register
+    \item The GPIO Driver and \texttt{driver/gpio.h}
+\end{enumerate}
+
+\noindent\rule{\textwidth}{0.4pt}
+\vspace{1em}
+
+\section{The Memory Hierarchy}
+
+Every computing system stores data in three main places. Understanding them first makes drivers, \texttt{const}, and embedded memory tips make sense later.
+
+\subsection{CPU Registers}
+
+\begin{itemize}
+    \item \textbf{Location:} Built directly inside the CPU, next to the Arithmetic Logic Unit.
+    \item \textbf{Speed:} The fastest storage in the system; accessed within a single clock cycle.
+    \item \textbf{Capacity:} Extremely small --- typically 32 or 64 bits per register.
+    \item \textbf{Volatility:} Volatile (loses data when power is removed).
+    \item \textbf{Purpose:} Holds the exact values the processor is calculating \emph{right now}.
+\end{itemize}
+
+\subsection{RAM (Random Access Memory)}
+
+\begin{itemize}
+    \item \textbf{Location:} Outside the CPU core --- on the motherboard in a PC, on the silicon die in a microcontroller.
+    \item \textbf{Speed:} Fast, but roughly $100\times$ slower than a register, because data must travel to the CPU.
+    \item \textbf{Capacity:} Moderate to large --- 8 GB to 64 GB in modern PCs.
+    \item \textbf{Volatility:} Volatile (clears completely when power is removed).
+    \item \textbf{Purpose:} The primary workspace for the operating system and running programs: variables, stacks, and buffers currently in use.
+\end{itemize}
+
+\subsection{Flash Memory}
+
+\begin{itemize}
+    \item \textbf{Location:} Storage chips --- SSDs and USB sticks on a PC, a SPI flash chip next to a microcontroller.
+    \item \textbf{Speed:} Slower than RAM and much slower than registers.
+    \item \textbf{Capacity:} Very large --- hundreds of gigabytes on PCs, megabytes on microcontrollers.
+    \item \textbf{Volatility:} Non-volatile (survives power-off).
+    \item \textbf{Purpose:} Long-term storage: the operating system, applications, photos, documents --- everything waiting to be loaded into RAM.
+\end{itemize}
+
+\subsection{The same hierarchy inside the ESP32}
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}l X X l c@{}}
+\toprule
+\textbf{Level} & \textbf{On your PC} & \textbf{On the ESP32} & \textbf{Typical ESP32 size} & \textbf{Volatile?} \\
+\midrule
+Registers & Inside the CPU & Inside the Xtensa CPU core & 32 bits each & Yes \\
+RAM & DIMM sticks on motherboard & SRAM built into the chip & $\sim$520 KB & Yes \\
+Flash & SSD / USB stick & SPI flash chip on the module & 4--16 MB & No \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Where your code actually lives}
+
+\begin{itemize}
+    \item \texttt{int count = 0;} $\rightarrow$ a variable in \textbf{RAM}.
+    \item \texttt{static const char *TAG = "hello\_esp32";} $\rightarrow$ constant text in \textbf{Flash} (read-only), saving RAM.
+    \item Your compiled program itself $\rightarrow$ stored in \textbf{Flash}, loaded or mapped at boot.
+    \item The bits that control a GPIO pin $\rightarrow$ \textbf{registers}, the fastest and smallest level of all.
+\end{itemize}
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item Speed order: \textbf{registers $\rightarrow$ RAM $\rightarrow$ Flash}.
+    \item Volatility order: registers and RAM lose data at power-off; Flash does not.
+    \item Embedded C always asks: \emph{where does this value live, and why?}
+\end{itemize}
+
+\newpage
+
+\section{Why RAM Is Slower Than a CPU Register}
+
+It is tempting to say ``RAM is just slower,'' but the real reasons are physical and structural. There are three of them.
+
+\subsection{Physical distance}
+
+Registers live directly inside the CPU chip, right next to the Arithmetic Logic Unit (ALU). Electrical signals travel between them almost instantly --- in less than a nanosecond.
+
+RAM sits outside the CPU core, connected by physical wires and buses. On a PC it is a separate chip on the motherboard; even inside a microcontroller it is a separate block of silicon reached through an internal bus. Every extra millimeter of wire adds measurable delay, because signals move fast but not infinitely fast.
+
+\subsection{Storage technology}
+
+Registers are built from high-speed \textbf{flip-flops} (small SRAM-style circuits made of several transistors). They hold a state stably and switch almost instantly, with no maintenance overhead.
+
+PC main memory, by contrast, uses \textbf{DRAM} --- tiny capacitors paired with transistors. Capacitors leak charge, so DRAM must be \textbf{refreshed constantly}, and every read or write means charging or discharging a capacitor. That charging takes time, and the refresh traffic competes with your program for bandwidth.
+
+\subsection{Capacity and address decoding}
+
+Registers are tiny --- 32 or 64 bits each, and only a few dozen of them exist. The CPU refers to them by short names encoded directly in the instruction, so there is nothing to look up.
+
+RAM is enormous --- gigabytes on a PC. To reach one byte among billions, the system must decode a long address, route the request through a \textbf{memory controller}, select the correct row and column, and return the data. All of that bookkeeping costs clock cycles before your value even arrives.
+
+\subsection{Note: the ESP32 case}
+
+On the ESP32, the internal RAM is \textbf{SRAM}, not DRAM --- there are no capacitors and no refresh, so reason 2.2 mostly disappears. But reasons 2.1 and 2.3 remain: the SRAM block sits across an internal bus from the CPU core, and addresses must still be decoded. That is why even on-chip SRAM is slower than a register, and why the hierarchy \emph{register $\rightarrow$ RAM $\rightarrow$ Flash} holds on every computer, from a phone to a microcontroller.
+
+\newpage
+
+\section{The GPIO Driver and \texttt{driver/gpio.h}}
+
+The last line of Section 1.5 is the bridge to this topic: the bits that control a GPIO pin live in \textbf{registers}. This section explains how your C program reaches them safely.
+
+\subsection{The header}
+
+\begin{verbatim}
+#include "driver/gpio.h"
+\end{verbatim}
+
+This header belongs to the \textbf{ESP-IDF GPIO driver} --- the software layer that provides the interface between your C program and the ESP32's physical GPIO pins.
+
+\subsection{What is a ``driver''?}
+
+At the lowest level, GPIO hardware is controlled through \textbf{hardware registers} --- the special memory-mapped locations described in Section 1, whose bits control:
+
+\begin{itemize}
+    \item whether a pin is an input or an output,
+    \item whether an output is HIGH or LOW,
+    \item pull-up and pull-down configuration,
+    \item interrupts and other GPIO features.
+\end{itemize}
+
+\subsection{Why not write to registers directly?}
+
+You \emph{could}, but that would make your program:
+
+\begin{itemize}
+    \item \textbf{more error-prone} --- one incorrect bit can misconfigure the hardware,
+    \item \textbf{chip-specific} --- different ESP32 families expose different register layouts,
+    \item \textbf{harder to read} --- raw register code hides the intention behind bit masks.
+\end{itemize}
+
+\subsection{The driver layer}
+
+The GPIO driver sits between your program and those details. Instead of manipulating registers manually, you write:
+
+\begin{verbatim}
+gpio_set_level(GPIO_NUM_5, 1);
+\end{verbatim}
+
+which expresses the intention directly: \emph{set GPIO 5 to HIGH.} The driver performs the correct register operations underneath.
+
+\begin{verbatim}
+Your C program
+      |  gpio_set_level()
+      v
+GPIO driver (driver/gpio.h)
+      |  register writes
+      v
+GPIO hardware registers
+      |
+      v
+Physical pin outputs 3.3V / 0V
+\end{verbatim}
+
+So \texttt{driver/gpio.h} gives your program access to the \textbf{driver's interface}, not to the registers themselves.
+
+\subsection{What this header provides (used in Project 2)}
+
+\begin{itemize}
+    \item \texttt{GPIO\_NUM\_5}, \texttt{GPIO\_NUM\_2}, \dots --- named pin identifiers
+    \item \texttt{gpio\_config\_t} --- the structure that packages all pin settings
+    \item \texttt{GPIO\_MODE\_OUTPUT}, \texttt{GPIO\_PULLUP\_DISABLE}, \texttt{GPIO\_INTR\_DISABLE} --- configuration constants
+    \item \texttt{gpio\_config()} --- applies the configuration to the hardware
+    \item \texttt{gpio\_set\_level()} --- drives a pin HIGH or LOW
+\end{itemize}
+
+\subsection{Build-system note}
+
+In ESP-IDF v6.x this header is provided by the component \textbf{\texttt{esp\_driver\_gpio}}, which is not added to your project automatically. It must be declared in \texttt{main/CMakeLists.txt}:
+
+\begin{verbatim}
+REQUIRES esp_driver_gpio
+\end{verbatim}
+
+Otherwise the compiler cannot even find the header --- a deliberate design choice that keeps every project's dependencies explicit.
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item A driver is a safe, readable layer over hardware registers.
+    \item \texttt{driver/gpio.h} exposes configuration (\texttt{gpio\_config}) and control (\texttt{gpio\_set\_level}).
+    \item Headers and CMake \texttt{REQUIRES} must agree, or the build fails.
+\end{itemize}
+\section{The Electrical Layer: Push-Pull, Logic Levels, and Current Limiting}
+
+Until now, a GPIO output has been a line of code. From here on, it is a piece of physics. This section explains what actually happens on the pin when you write a \texttt{1} or a \texttt{0}, and how to keep your first circuit alive.
+
+\subsection{What ``output'' means inside the chip: push-pull}
+
+Inside the ESP32, every GPIO pin is connected to two tiny transistor switches:
+
+\begin{verbatim}
+        3.3V rail
+           |
+        [switch A]   <-- closes when you write 1
+           |
+           +---- pin wire ----> to your LED
+           |
+        [switch B]   <-- closes when you write 0
+           |
+        GND rail
+\end{verbatim}
+
+When your code writes a \textbf{1}, switch A closes and the pin is connected to the 3.3 V rail. Current flows \emph{out} of the pin, through your LED, and back to GND. The pin is \textbf{pushing} current.
+
+When your code writes a \textbf{0}, switch B closes and the pin is connected to the GND rail. Current flows \emph{into} the pin. The pin is \textbf{pulling} current.
+
+The two switches are never closed at the same time --- that would connect 3.3 V directly to GND, which is called a \textbf{short circuit} and must never happen.
+
+This arrangement is called \textbf{push-pull output}, and it is the reason a GPIO pin can drive a signal HIGH and LOW all by itself, without any external help.
+
+Other pin modes exist (some can only pull low, some only listen), but as long as you are driving an LED, push-pull output is exactly what you want.
+
+\subsection{What a ``1'' actually is: 3.3 V logic}
+
+Digital values are not abstract. They are voltages that you can measure with a multimeter.
+
+On the ESP32:
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}X X@{}}
+\toprule
+\textbf{Logic value in your code} & \textbf{Voltage on the physical pin} \\
+\midrule
+\texttt{1} (HIGH) & $\approx 3.3$ V \\
+\texttt{0} (LOW) & $\approx 0$ V \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This is called \textbf{3.3 V logic}. Other boards use other levels --- classic Arduino boards use 5 V logic, some small sensors use 1.8 V --- so before connecting two devices together, you must always ask: \emph{what logic level does each side speak?}
+
+Two rules follow directly from this:
+
+\begin{itemize}
+    \item \textbf{Never connect a 5 V signal to an ESP32 GPIO.} The pin is designed for 3.3 V; higher voltages can damage it permanently.
+    
+    \item \textbf{An ESP32 output may be too weak for a 5 V-only input.} A 5 V device may not recognize 3.3 V as a HIGH. Mixing logic levels requires a level-shifter circuit.
+\end{itemize}
+
+So when you call \texttt{gpio\_set\_level(LED\_PIN, 1)}, the physical meaning is: \emph{close switch A and place 3.3 volts on that pin.}
+
+\subsection{Why the LED needs a resistor}
+
+An LED is a \textbf{current-driven} device, and it does not limit its own current. Once the voltage across it exceeds its \textbf{forward voltage} ($V_f$), it simply takes as much current as the source can give.
+
+Connected directly to a 3.3 V pin, a red LED would try to draw far more current than it can survive --- and far more than the GPIO pin can safely supply. The result is a dead LED, a damaged pin, or both.
+
+The series resistor is what sets the current. The LED ``consumes'' its forward voltage, and the resistor absorbs the rest. Ohm's law then fixes the current:
+
+\[
+I = \frac{V_{\mathrm{pin}} - V_f}{R}
+\]
+
+where:
+
+\begin{itemize}
+    \item $V_{\mathrm{pin}}$ is the pin voltage (3.3 V when HIGH),
+    \item $V_f$ is the LED forward voltage ($\approx 2.0$ V for red, $\approx 2.2$ V for green, $\approx 3.0$ V for blue and white),
+    \item $R$ is your series resistor.
+\end{itemize}
+
+A useful safety limit to remember: \textbf{keep the current through a single ESP32 GPIO pin at or below about 12 mA.}
+
+\subsection{Choosing a resistor: use a range, not a magic number}
+
+You do not need one perfect resistor value. You need a \textbf{safe range}. For a standard red or green LED on a 3.3 V pin, the recommended range is:
+
+\begin{center}
+$220\,\Omega$ to $470\,\Omega$
+\end{center}
+
+To see why, apply the formula from the previous subsection with $V_f \approx 2.0$ V:
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}X X X@{}}
+\toprule
+\textbf{Resistor} & \textbf{Approximate current} & \textbf{Behaviour} \\
+\midrule
+$100\,\Omega$ & $\approx 13$ mA & At or above the pin limit --- avoid \\
+$150\,\Omega$ & $\approx 9$ mA & Very bright, close to the limit \\
+\textbf{$220\,\Omega$ -- $470\,\Omega$} & $\approx 3$ -- $6$ mA & \textbf{Recommended: bright and safe} \\
+$1\,\mathrm{k}\Omega$ & $\approx 1.3$ mA & Safe but noticeably dim \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Inside the recommended range, the LED is clearly visible, the pin stays cool, and small differences between LEDs and boards do not matter. Outside it, you are either stressing the hardware or wasting your time debugging a ``broken'' LED that is simply starved of current.
+
+Two practical notes:
+
+\begin{itemize}
+    \item Blue and white LEDs have $V_f \approx 3.0$ V, leaving only $\approx 0.3$ V across the resistor at 3.3 V logic. They will glow dimly or not at all. Start your experiments with red or green LEDs.
+    
+    \item The resistor works on either side of the LED. What matters is that it is \textbf{in series} somewhere in the path from pin to GND.
+\end{itemize}
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item Push-pull output means the pin can actively drive HIGH (source current) and LOW (sink current) using two internal switches.
+    
+    \item A logic \texttt{1} on the ESP32 is $\approx 3.3$ V; respect logic levels when mixing boards.
+    
+    \item An LED does not limit its own current; a series resistor does.
+    
+    \item Use $I = (V_{\mathrm{pin}} - V_f) / R$ to reason about current, and stay within \textbf{$220\,\Omega$ -- $470\,\Omega$} for red and green LEDs on 3.3 V pins.
+    
+    \item Keep GPIO pin current at or below about 12 mA.
+\end{itemize}
+\section{Naming the Pin: \texttt{\#define LED\_PIN GPIO\_NUM\_5}}
+
+Near the top of the program, a single line gives the hardware pin a human-readable name:
+
+\begin{verbatim}
+#define LED_PIN GPIO_NUM_5
+\end{verbatim}
+
+This line is a \textbf{preprocessor macro}. It is not executed, not stored, and not compiled in the usual sense --- it is a naming instruction processed before compilation begins.
+
+\subsection{What \texttt{\#define} does}
+
+\texttt{\#define} is handled by the \textbf{C preprocessor}, a text-substitution step that runs before the compiler sees your program. The line above tells it:
+
+\begin{quote}
+``Whenever you see \texttt{LED\_PIN}, replace it with \texttt{GPIO\_NUM\_5}.''
+\end{quote}
+
+So when you write:
+
+\begin{verbatim}
+gpio_set_level(LED_PIN, 1);
+\end{verbatim}
+
+the preprocessor effectively turns it into:
+
+\begin{verbatim}
+gpio_set_level(GPIO_NUM_5, 1);
+\end{verbatim}
+
+before compilation. The full pipeline looks like this:
+
+\begin{verbatim}
+Source code
+    |
+    v
+#define substitution (preprocessor)
+    |
+    v
+Compiler
+    |
+    v
+Machine code
+\end{verbatim}
+
+\subsection{What \texttt{GPIO\_NUM\_5} itself is}
+
+\texttt{GPIO\_NUM\_5} is not a macro. It is a named constant from an enumeration (\texttt{gpio\_num\_t}) defined in \texttt{driver/gpio.h} --- ESP-IDF's portable, readable name for physical pin 5. Using it instead of a bare \texttt{5} keeps your code tied to the driver's naming rather than to a remembered number.
+
+\subsection{Why give the pin a name at all?}
+
+Without the macro, the code reads as a list of numbers:
+
+\begin{verbatim}
+gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
+gpio_set_level(GPIO_NUM_5, 1);
+gpio_set_level(GPIO_NUM_5, 0);
+\end{verbatim}
+
+With the macro, the same code announces its intention:
+
+\begin{verbatim}
+#define LED_PIN GPIO_NUM_5
+
+gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
+gpio_set_level(LED_PIN, 1);
+gpio_set_level(LED_PIN, 0);
+\end{verbatim}
+
+Now the reader instantly knows \emph{what the pin is for}, not just \emph{which number it is}.
+
+There is a maintenance benefit too. If the LED later moves to another pin, only one line changes:
+
+\begin{verbatim}
+#define LED_PIN GPIO_NUM_18
+\end{verbatim}
+
+instead of every occurrence of the old pin number scattered through the file. This removes an entire class of bugs: the missed occurrence.
+
+\subsection{A macro is not a variable}
+
+It is important to understand what \texttt{\#define} does \textbf{not} do:
+
+\begin{itemize}
+    \item It allocates \textbf{no memory}. There is no storage cell called \texttt{LED\_PIN}.
+    \item It has \textbf{no type}. The preprocessor works on plain text, before types exist.
+    \item It costs \textbf{nothing at run time}. After substitution, the name is gone.
+\end{itemize}
+
+Conceptually, \texttt{\#define LED\_PIN GPIO\_NUM\_5} is simply giving a hardware pin a human-readable name inside your source code.
+
+\subsection{Two rules that prevent classic bugs}
+
+\textbf{Rule 1: never end a \texttt{\#define} with a semicolon.}
+
+\begin{verbatim}
+#define LED_PIN GPIO_NUM_5;    // WRONG
+\end{verbatim}
+
+Because substitution is literal, your call becomes:
+
+\begin{verbatim}
+gpio_set_level(GPIO_NUM_5;, 1);   // syntax error
+\end{verbatim}
+
+The stray semicolon travels with the macro into every place it is used.
+
+\bigskip
+
+\textbf{Rule 2: write macro names in UPPER\_CASE.}
+
+By convention, macros use upper-case letters and underscores (\texttt{LED\_PIN}, \texttt{MAX\_RETRIES}). This lets any reader immediately recognize a preprocessor definition instead of a variable.
+
+\subsection{An alternative you will also see}
+
+Some code prefers a typed constant:
+
+\begin{verbatim}
+static const gpio_num_t LED_PIN = GPIO_NUM_5;
+\end{verbatim}
+
+This version has a real type, so the compiler can catch misuse, and it still costs essentially nothing. Both styles are correct; ESP-IDF examples traditionally use the \texttt{\#define} style, which is why this curriculum starts there.
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item \texttt{\#define} creates a preprocessor text alias, processed before compilation.
+    \item The compiler only ever sees \texttt{GPIO\_NUM\_5}; the name \texttt{LED\_PIN} exists for humans.
+    \item Macros allocate no memory and have no type.
+    \item Named pins give readability, one-point changes, and freedom from magic numbers.
+    \item No semicolon after \texttt{\#define}; UPPER\_CASE names by convention.
+\end{itemize}
+\section{The Configuration Package: \texttt{gpio\_config\_t io\_conf = \{\};}}
+
+Before the ESP32 can drive a pin, the GPIO driver needs a complete description of how that pin should behave. Not only \emph{which} pin, but also: which direction should it work in? Should internal resistors be connected? Should changes on the pin alert the CPU? ESP-IDF collects all of these answers into a single object, and this line creates that object.
+
+\subsection{A struct is a form with named fields}
+
+A \textbf{struct} (structure) is a C type that bundles several related variables --- called \textbf{fields} --- under one name. The best analogy is a paper form. Each field is one blank on the form, and the whole form travels together as a single sheet.
+
+\texttt{gpio\_config\_t} is the form type that ESP-IDF defined for GPIO configuration. Simplified, it looks like this:
+
+\begin{verbatim}
+typedef struct {
+    uint64_t        pin_bit_mask;   // which pin(s) this config applies to
+    gpio_mode_t     mode;           // input, output, or both
+    gpio_pullup_t   pull_up_en;     // internal pull-up resistor on/off
+    gpio_pulldown_t pull_down_en;   // internal pull-down resistor on/off
+    gpio_int_type_t intr_type;      // interrupt behaviour
+} gpio_config_t;
+\end{verbatim}
+
+You do not need to memorize this definition. You only need to remember the idea: \textbf{five questions, one form.}
+
+\subsection{Reading the declaration line, piece by piece}
+
+\begin{verbatim}
+gpio_config_t io_conf = {};
+\end{verbatim}
+
+\textbf{\texttt{gpio\_config\_t}} is the type --- the blank form shown above.
+
+\textbf{\texttt{io\_conf}} is simply \emph{your} name for this particular filled-in form. You could call it \texttt{config}, \texttt{led\_cfg}, or anything else; the driver never sees the name. It is an ordinary local variable, so while \texttt{app\_main()} runs it lives in \textbf{RAM}, on the task stack, exactly like the \texttt{count} variable from Project 1.
+
+\textbf{\texttt{= \{\}}} is the part beginners skip and regret. A local variable in C that is not initialized contains \textbf{garbage} --- whatever bits happened to be left at that place in RAM. If you created the struct without \texttt{= \{\}} and then filled only two of the five fields, the remaining three would keep their garbage values, and the driver would happily configure your pin with them. The initializer \texttt{= \{\}} sets \textbf{every field to zero}: empty mask, mode 0, resistors disabled, interrupts disabled. You then overwrite only the fields you care about, from a known-clean baseline. In older code you may see the spelling \texttt{= \{0\}}; it means the same thing.
+
+\subsection{The five questions the form asks}
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}l X l@{}}
+\toprule
+\textbf{Field} & \textbf{Question it answers} & \textbf{Value used in Project 2} \\
+\midrule
+\texttt{pin\_bit\_mask} & Which pin or pins? & \texttt{(1ULL << LED\_PIN)} \\
+\texttt{mode} & Input, output, or both? & \texttt{GPIO\_MODE\_OUTPUT} \\
+\texttt{pull\_up\_en} & Internal pull-up resistor? & \texttt{GPIO\_PULLUP\_DISABLE} \\
+\texttt{pull\_down\_en} & Internal pull-down resistor? & \texttt{GPIO\_PULLDOWN\_DISABLE} \\
+\texttt{intr\_type} & Should interrupts fire? & \texttt{GPIO\_INTR\_DISABLE} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The next few lines of the program simply fill in these fields one by one. Before reading those lines, it is worth understanding each question properly, because every later peripheral in this curriculum --- UART, I2C, SPI, LEDC --- will ask you the same style of questions on its own form.
+
+\subsection{Field 1: \texttt{pin\_bit\_mask} --- which pin or pins?}
+
+This field does not say \emph{what} the pin will do. It only says \textbf{which pins this configuration applies to}.
+
+It is called a \textbf{bit mask} because it is a 64-bit number in which \textbf{each bit represents one GPIO}: bit 0 stands for GPIO0, bit 5 for GPIO5, bit 34 for GPIO34, and so on. A bit set to \texttt{1} means ``this pin is included''; a bit left at \texttt{0} means ``this pin is not touched by this configuration.'' This design lets one single struct configure many pins in one call, which you will use in the traffic-light project.
+
+In Project 2 the value is:
+
+\begin{verbatim}
+io_conf.pin_bit_mask = (1ULL << LED_PIN);
+\end{verbatim}
+
+Two details inside this expression deserve attention.
+
+\textbf{\texttt{1ULL}} means the number 1 stored as an \emph{unsigned long long} --- a 64-bit unsigned integer. Why not write a plain \texttt{1}? Because a plain \texttt{1} in C is a 32-bit \texttt{int}, and the ESP32 has GPIO numbers above 31 (for example GPIO32 to GPIO39). Shifting a 32-bit value by 32 or more positions is \textbf{undefined behaviour} in C: a silent, dangerous bug that may work today and fail tomorrow. Writing \texttt{1ULL} makes the shift happen in 64-bit space, matching the \texttt{uint64\_t} type of the field, so every possible GPIO number is safe.
+
+\textbf{\texttt{<<}} is the left-shift operator: it slides bits to the left. \texttt{1ULL << 5} takes the single \texttt{1} bit and moves it five positions left, which is the same as computing $2^5$:
+
+\begin{verbatim}
+1          = 0b0000000000000001
+1ULL << 5  = 0b0000000000100000
+                        ^
+                     bit 5 set -> GPIO5 selected
+\end{verbatim}
+
+The result is a mask with \textbf{exactly one bit set}, so exactly one pin receives this configuration.
+
+Because the field is a mask, several pins can be combined with the bitwise OR operator \texttt{|}, which sets multiple bits at once:
+
+\begin{verbatim}
+io_conf.pin_bit_mask = (1ULL << LED_RED) | (1ULL << LED_YELLOW) | (1ULL << LED_GREEN);
+\end{verbatim}
+
+All three pins would then receive the same configuration from a single call. Keep this trick in mind for Project 6.
+
+\subsection{Field 2: \texttt{mode} --- input, output, or both?}
+
+This field chooses the pin's \textbf{direction}: is it listening to the outside world, driving it, or both?
+
+In Project 2 the value is:
+
+\begin{verbatim}
+io_conf.mode = GPIO_MODE_OUTPUT;
+\end{verbatim}
+
+This selects \textbf{push-pull output}, the two-switch arrangement described in Section 4: writing \texttt{1} connects the pin to the 3.3 V rail and current flows out; writing \texttt{0} connects it to the GND rail and current flows in. The pin drives both levels by itself, which is exactly what an LED needs.
+
+The other values you will meet in this curriculum are:
+
+\begin{itemize}
+    \item \textbf{\texttt{GPIO\_MODE\_INPUT}} --- the pin only listens. This is how buttons and digital sensors are read, starting in Project 4.
+    \item \textbf{\texttt{GPIO\_MODE\_INPUT\_OUTPUT}} --- the pin can do both at once. Rare, but occasionally useful for bidirectional lines.
+    \item \textbf{\texttt{GPIO\_MODE\_OUTPUT\_OD}} --- open-drain output: the pin can only pull LOW, never drive HIGH. It needs an external pull-up resistor to produce a HIGH level. Some bus protocols, including I2C in Phase 3, rely on this behaviour.
+\end{itemize}
+
+Choosing the wrong mode is one of the classic causes of ``my LED will not light'' or ``my button always reads zero.'' The mode decides which internal circuitry is connected to the pin; everything else builds on that choice.
+
+\subsection{Field 3: \texttt{pull\_up\_en} --- internal pull-up resistor?}
+
+Inside the ESP32, each GPIO can optionally connect a \textbf{weak internal resistor} between the pin and the 3.3 V rail. That is a pull-up. Its job is to give the pin a defined default level when \emph{nothing else is driving it}. Without any pull resistor, an unconnected input pin \textbf{floats}: it behaves like a tiny antenna, picking up electrical noise, and reads randomly HIGH or LOW.
+
+In Project 2 the value is:
+
+\begin{verbatim}
+io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+\end{verbatim}
+
+Why disable it here? Because the pin is an \textbf{output}. The push-pull switches already drive the pin strongly in both directions, so a weak resistor would add nothing --- it would only leak a small amount of current for no benefit. Pull resistors matter for \emph{inputs}, not outputs.
+
+You will enable this field in Project 4, when a button connects the pin to GND. With the internal pull-up enabled, a released button reads \texttt{1} (held HIGH by the resistor) and a pressed button reads \texttt{0} (pulled to GND by your finger) --- with no external resistor on the breadboard at all. Note that these internal resistors are \emph{weak} (tens of kilo-ohms), which is precisely why they never fight a strong driver and never damage anything.
+
+\subsection{Field 4: \texttt{pull\_down\_en} --- internal pull-down resistor?}
+
+This is the mirror image of the previous field: a weak internal resistor between the pin and \textbf{GND}, holding an undriven pin at LOW instead of HIGH.
+
+In Project 2:
+
+\begin{verbatim}
+io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+\end{verbatim}
+
+for the same reason as the pull-up --- an output pin does not need a default level, because it is always actively driven.
+
+A pull-down becomes useful when your button is wired the other way round, between the pin and 3.3 V: released reads \texttt{0} (held LOW by the resistor), pressed reads \texttt{1}.
+
+One rule to remember: \textbf{never enable both pull resistors at the same time.} Together they would form a voltage divider from 3.3 V to GND, wasting current and leaving the pin at a meaningless middle voltage. Outputs disable both; floating inputs enable exactly one.
+
+\subsection{Field 5: \texttt{intr\_type} --- should interrupts fire?}
+
+An \textbf{interrupt} is a hardware alert: the instant a pin changes level, the CPU pauses whatever it is doing and jumps to a special function called an interrupt service routine. Interrupts are how a microcontroller reacts to the world \emph{immediately} instead of noticing on its next loop pass. They are powerful, and they are the entire subject of Project 5.
+
+In Project 2 nothing needs an instant reaction. The loop blinks the LED on its own schedule and nobody is watching the pin, so interrupts are switched off:
+
+\begin{verbatim}
+io_conf.intr_type = GPIO_INTR_DISABLE;
+\end{verbatim}
+
+The alternatives you will meet in Project 5 include \texttt{GPIO\_INTR\_POSEDGE} (trigger when the pin rises from LOW to HIGH), \texttt{GPIO\_INTR\_NEGEDGE} (trigger on falling), and \texttt{GPIO\_INTR\_ANYEDGE} (trigger on any change).
+
+Disabling interrupts now is a deliberate teaching choice. Interrupts bring real complexity --- special functions, queues, timing rules --- and enabling them before you need them invites confusing bugs. Keep the pin silent until the curriculum asks for noise.
+
+\subsection{What happens next in the program}
+
+With the form understood, the next five lines of code are no longer mysterious: each one is a single assignment that answers one of the five questions, using the \textbf{dot operator}. Writing \texttt{io\_conf.mode = GPIO\_MODE\_OUTPUT;} means ``set the field named \texttt{mode} inside the struct named \texttt{io\_conf}.''
+
+Once all five fields are filled, one final call hands the completed form to the driver:
+
+\begin{verbatim}
+gpio_config(&io_conf);
+\end{verbatim}
+
+The \texttt{\&} means ``the address of.'' The function receives a pointer to your struct, reads the filled-in form from RAM, and writes those answers into the GPIO hardware registers described in Section 3. From that moment on, the physical pin behaves exactly as the form specified.
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item A struct is a form with named fields; \texttt{gpio\_config\_t} is ESP-IDF's GPIO form.
+    \item \texttt{= \{\}} zero-initializes every field, so you never configure hardware from garbage.
+    \item \texttt{pin\_bit\_mask} selects pins with one bit per GPIO; build it safely with \texttt{1ULL << n}, and combine pins with \texttt{|}.
+    \item \texttt{mode} chooses direction; an LED needs \texttt{GPIO\_MODE\_OUTPUT} (push-pull).
+    \item Pull resistors give undriven \textbf{inputs} a default level; outputs disable both.
+    \item \texttt{intr\_type} gates interrupt generation; disable it until Project 5 needs it.
+    \item The universal ESP-IDF rhythm: create the struct, fill the fields, hand it over with \texttt{\&}.
+\end{itemize}
+
+\subsection{Why the Call Is Still Necessary: Stored Values vs. Configured Hardware}
+
+At this point in the program, a very reasonable doubt appears. Every field of the struct has been filled:
+
+\begin{verbatim}
+io_conf.pin_bit_mask = (1ULL << LED_PIN);
+io_conf.mode = GPIO_MODE_OUTPUT;
+io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+io_conf.intr_type = GPIO_INTR_DISABLE;
+\end{verbatim}
+
+The values are stored. The form is complete. So why is one more line needed at all?
+
+\begin{verbatim}
+gpio_config(&io_conf);
+\end{verbatim}
+
+If the values are already stored, is the pin not already configured? \textbf{No.} And understanding why is one of the most important mental shifts in embedded programming.
+
+\subsubsection*{Two separate places exist}
+
+\textbf{Place 1: your struct in RAM.} \\
+\texttt{io\_conf} is an ordinary local variable. When you write \texttt{io\_conf.intr\_type = GPIO\_INTR\_DISABLE;}, you store a number into \textbf{your variable in RAM}. That is all that happens. It is a form filled out and left lying on your desk.
+
+\textbf{Place 2: the GPIO hardware registers.} \\
+The physical pin is controlled by special registers inside the GPIO peripheral --- the memory-mapped locations described in Section 3. The pin only becomes a push-pull output when \emph{those registers} are written.
+
+Your assignments never touch Place 2. The hardware does not know that your struct exists. Electrically, after all five assignments, the pin is still unconfigured.
+
+\subsubsection*{What the call actually does}
+
+\texttt{gpio\_config(\&io\_conf)} is the bridge between the two places. It is the only line that reads your struct from RAM and writes the answers into the hardware registers. Inside, the driver performs roughly this work:
+
+\begin{verbatim}
+for each pin selected in pin_bit_mask:
+    write the mode bits         -> GPIO mode register
+    write the pull-up/down bits -> GPIO pin register
+    write the interrupt bits    -> GPIO pin register
+\end{verbatim}
+
+Without this call there are no register writes, the pin keeps its default state, and the later \texttt{gpio\_set\_level()} has no configured output pin to drive.
+
+\textbf{An experiment worth doing once:} comment out the \texttt{gpio\_config(\&io\_conf);} line, flash the board, and watch. Every value is still ``stored'' in your struct --- and the LED stays completely dead. That single commented line is the difference between a form on a desk and a form that has been submitted.
+
+\subsubsection*{Why the struct must be passed to the function}
+
+A second doubt follows: if \texttt{gpio\_config()} is the function that writes the registers, why must you hand it \texttt{io\_conf}? Why does it not simply know what to configure?
+
+Because in C, \textbf{functions cannot see each other's local variables.} The variable \texttt{io\_conf} exists only inside \texttt{app\_main()}. The function \texttt{gpio\_config()} was written long before your program existed; it has no idea that your variable exists, what it is called, or where in RAM it lives. A real application may hold many configuration structs at the same time --- one for an LED, one for a button, one for a buzzer --- and the driver must be told \emph{which} form to apply.
+
+Passing \texttt{\&io\_conf} answers both problems at once. The \texttt{\&} gives the function the \textbf{address} of your struct in RAM, so it can find the form and read every field exactly as you filled it.
+
+The everyday analogy is exact: filling out a bank form and leaving it on your desk does not open an account. The values are stored on paper, but nothing happens until the form reaches the teller. \texttt{gpio\_config()} is the teller, and \texttt{\&io\_conf} is the act of handing over the form.
+
+\subsubsection*{The three roles, in one place}
+
+\begin{itemize}
+    \item \textbf{The assignments} (\texttt{io\_conf.mode = ...}) write the form. The values live in RAM only.
+    \item \textbf{The call} (\texttt{gpio\_config(...)}) submits the form. RAM values are copied into hardware registers.
+    \item \textbf{The argument} (\texttt{\&io\_conf}) identifies the form. It tells the driver which struct to read and where it lives.
+\end{itemize}
+
+Filling a form is not the same as submitting it. The hardware only obeys submitted forms.
+
+\subsubsection*{Key points}
+
+\begin{itemize}
+    \item A filled struct is data in RAM; a configured pin is data in hardware registers. They are different places.
+    \item Assignments alone never touch the hardware; only \texttt{gpio\_config()} performs the register writes.
+    \item Commenting out the config call leaves every value ``stored'' and every pin unconfigured --- a useful experiment to feel this truth once.
+    \item Functions cannot see each other's local variables, so the struct must be passed explicitly.
+    \item \texttt{\&io\_conf} passes the address of the form, letting the driver read exactly the fields you filled.
+\end{itemize}
+\section{The Blinking Heartbeat: State, Toggle, Drive, Report}
+
+With the pin configured, the program enters its infinite loop. Four lines inside that loop produce the entire behaviour of the project. Each one has a distinct job: \textbf{remember}, \textbf{flip}, \textbf{drive}, \textbf{report}. This section takes them one at a time.
+
+\subsection{\texttt{bool led\_on = false;} --- giving the program a memory}
+
+\begin{verbatim}
+bool led_on = false;
+\end{verbatim}
+
+\textbf{The type: \texttt{bool}.} \\
+C originally had no true/false type --- programmers survived with integers where \texttt{0} meant false and anything else meant true. Modern C fixed this with a proper Boolean type whose only possible values are \texttt{true} and \texttt{false}. ESP-IDF compiles with a modern C standard in which \texttt{bool} is built in; in older code you may see it enabled by including \texttt{<stdbool.h>}. Internally a \texttt{bool} still occupies a small whole unit of memory (typically one byte), but conceptually it holds exactly one bit of meaning: yes or no.
+
+\textbf{The name: \texttt{led\_on}.} \\
+This variable is the program's \textbf{memory of the physical world}. The ESP32 cannot look at the LED and see whether it is glowing; the only reliable record of the LED's state is the program's own last command. \texttt{led\_on} is that record: \emph{true} means ``the LED is on right now'', \emph{false} means ``it is off right now''.
+
+\textbf{The initial value: \texttt{false} --- because it is the truth.} \\
+The initializer is not arbitrary. When the program reaches the loop, the pin has just been configured as a push-pull output, and a freshly configured output register starts at \texttt{0}: the pin is LOW, no current flows, the LED is dark. The physical reality at that moment is \emph{off}. So the software memory must begin as \texttt{false}, matching reality exactly.
+
+If it started as \texttt{true}, the variable would open its life telling a lie --- claiming the LED is on while the LED is dark --- and every later decision built on that memory would be shifted by one step. And if it were left uninitialized, it would contain garbage bits and might ``remember'' a state that never existed. Initializing a state variable to the true physical starting condition is a habit worth keeping for every project in this curriculum: \textbf{the model must begin in agreement with the world it models.}
+
+Notice also \emph{where} this line sits: outside and above the \texttt{while (1)} loop, so it executes exactly once. The memory is created once and then updated forever.
+
+\subsection{\texttt{led\_on = !led\_on;} --- the flip}
+
+\begin{verbatim}
+led_on = !led_on;
+\end{verbatim}
+
+The \texttt{!} operator is logical \textbf{NOT}: it inverts a Boolean value.
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}ccc@{}}
+\toprule
+\textbf{\texttt{led\_on} before} & \textbf{\texttt{!led\_on}} & \textbf{\texttt{led\_on} after assignment} \\
+\midrule
+\texttt{false} & \texttt{true} & \texttt{true} \\
+\texttt{true} & \texttt{false} & \texttt{false} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Read the line aloud as: ``\emph{led\_on becomes not led\_on.}'' If the LED was on, it is now recorded as off; if it was off, it is now recorded as on. This single expression is the entire ``decision logic'' of the blink: repeated forever, it produces the alternating pattern on $\rightarrow$ off $\rightarrow$ on $\rightarrow$ off.
+
+One warning for new C programmers: the single \texttt{=} here is \textbf{assignment} (store a new value), not comparison. Comparison is \texttt{==}. The line \texttt{led\_on = !led\_on;} changes the variable; it does not ask a question about it.
+
+This flip-then-act pattern is the smallest possible \textbf{state machine}: one state variable, one transition rule, applied forever. Project 6 will grow this idea into machines with many states --- but the seed is right here.
+
+\subsection{\texttt{gpio\_set\_level(LED\_PIN, led\_on ? 1 : 0);} --- making hardware match memory}
+
+\begin{verbatim}
+gpio_set_level(LED_PIN, led_on ? 1 : 0);
+\end{verbatim}
+
+Two ideas meet in this line: the \textbf{conditional operator} and the \textbf{driver call}.
+
+\textbf{The conditional operator \texttt{? :}.} \\
+The expression \texttt{led\_on ? 1 : 0} reads as: ``\emph{if \texttt{led\_on} is true, the value is 1; otherwise, the value is 0.}'' It is a compact, expression-level \texttt{if/else}. The fully expanded equivalent is:
+
+\begin{verbatim}
+if (led_on) {
+    gpio_set_level(LED_PIN, 1);
+} else {
+    gpio_set_level(LED_PIN, 0);
+}
+\end{verbatim}
+
+The ternary form says the same thing in one line, and because it is an \emph{expression}, its result can be passed straight into a function argument.
+
+\textbf{The driver call.} \\
+\texttt{gpio\_set\_level(pin, level)} is the driver function that writes the output register of one pin --- the final software step before electricity moves. A level of \texttt{1} closes the upper push-pull switch: the pin drives 3.3 V, current flows through the resistor and LED, and light appears. A level of \texttt{0} closes the lower switch: the pin drives 0 V, current stops, and the LED goes dark (Section 4).
+
+So the whole line means: \textbf{make the physical pin agree with the program's memory} --- HIGH when the memory says on, LOW when it says off. Memory first, hardware second, every iteration, without exception.
+
+A side note you may see in other code: because \texttt{true} converts to \texttt{1} and \texttt{false} to \texttt{0}, writing \texttt{gpio\_set\_level(LED\_PIN, led\_on);} would also work. The explicit \texttt{? 1 : 0} is kept here because it shows the intended electrical levels with no implicit conversion hidden inside.
+
+\subsection{\texttt{ESP\_LOGI(TAG, "LED \%s", led\_on ? "ON" : "OFF");} --- telling the human}
+
+\begin{verbatim}
+ESP_LOGI(TAG, "LED %s", led_on ? "ON" : "OFF");
+\end{verbatim}
+
+This line changes nothing electrically. It exists for \textbf{you}, the person watching the serial monitor.
+
+\textbf{The \texttt{\%s} specifier.} \\
+Earlier logs used \texttt{\%d} for integers. \texttt{\%s} is for \textbf{strings} --- sequences of characters. It expects the address of the first character of a text value, exactly the kind of pointer you met with \texttt{const char *TAG}.
+
+\textbf{What the ternary chooses here.} \\
+\texttt{led\_on ? "ON" : "OFF"} selects between two \textbf{string literals}. String literals live in read-only Flash memory (Section 1), and each one is used in place as a small array of characters. So the expression evaluates to a pointer to either the text \texttt{ON} or the text \texttt{OFF}, and \texttt{\%s} prints whichever was chosen:
+
+\begin{verbatim}
+I (820) digital_output: LED ON
+I (1320) digital_output: LED OFF
+\end{verbatim}
+
+Notice the discipline in this line: the log reports the \textbf{same state variable} that drove the pin. The monitor therefore mirrors the hardware truthfully --- if the log says ON while the LED stays dark, you instantly know the bug is in the wiring or the pin number, not in the logic. A log line that agrees with reality is a debugging instrument; a log line that merely repeats intentions is decoration.
+
+\subsection{The four lines as one cycle}
+
+Trace one full pass of the loop, starting from \texttt{led\_on == false}:
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}c l X@{}}
+\toprule
+\textbf{Step} & \textbf{Line} & \textbf{Effect} \\
+\midrule
+1 & \texttt{led\_on = !led\_on;} & memory flips: \texttt{false} $\rightarrow$ \texttt{true} \\
+2 & \texttt{gpio\_set\_level(...)} & pin driven HIGH, LED lights \\
+3 & \texttt{ESP\_LOGI(...)} & monitor prints \texttt{LED ON} \\
+4 & \texttt{vTaskDelay(...)} & task sleeps 500 ms, CPU freed \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The next pass flips the memory back, drives the pin LOW, prints \texttt{LED OFF}, and sleeps again. Forever. Remember, flip, drive, report, rest --- that rhythm \emph{is} the program.
+
+\subsection{Key points}
+
+\begin{itemize}
+    \item \texttt{bool} holds exactly one meaning: \texttt{true} or \texttt{false}; it is the natural type for on/off state.
+    \item Initialize state variables to the \textbf{true physical starting condition} --- here \texttt{false}, because a fresh output pin is LOW and the LED is dark.
+    \item \texttt{led\_on = !led\_on;} is the toggle: assignment of the inverted value, the smallest possible state machine.
+    \item \texttt{cond ? a : b} is an expression-level if/else; here it converts software state into electrical levels.
+    \item \texttt{gpio\_set\_level()} is where software becomes electricity: 1 $\rightarrow$ 3.3 V, 0 $\rightarrow$ 0 V.
+    \item \texttt{\%s} prints strings; logging the same variable that drives the pin keeps the monitor honest.
+\end{itemize}
+\section*{Exercises}
+
+\subsection*{Exercise 1: Asymmetric Blink}
+\textbf{Task:} Make the LED stay ON for 1 second, and OFF for 200 ms.
+
+\textbf{Solution:}
+\begin{verbatim}
+while (1)
+{
+    gpio_set_level(LED_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    gpio_set_level(LED_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+\end{verbatim}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Exercise 2: Opposite Phase Second LED}
+\textbf{Task:} Add a second LED on GPIO18 that blinks in the opposite phase of the first LED.
+
+\textbf{Solution:}
+\begin{verbatim}
+#define LED_PIN   GPIO_NUM_5
+#define LED2_PIN  GPIO_NUM_18
+
+/* configure both pins with ONE struct */
+io_conf.pin_bit_mask = (1ULL << LED_PIN) | (1ULL << LED2_PIN);
+io_conf.mode = GPIO_MODE_OUTPUT;
+/* ...same pulls/intr as before... */
+gpio_config(&io_conf);
+
+while (1)
+{
+    led_on = !led_on;
+    gpio_set_level(LED_PIN,  led_on ? 1 : 0);
+    gpio_set_level(LED2_PIN, led_on ? 0 : 1);   // inverted
+    vTaskDelay(pdMS_TO_TICKS(500));
+}
+\end{verbatim}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Exercise 3: Finite Blink Sequence}
+\textbf{Task:} Blink exactly 10 times, then keep the LED permanently ON.
+
+\textbf{Solution:}
+\begin{verbatim}
+for (int i = 0; i < 10; i++)
+{
+    gpio_set_level(LED_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_set_level(LED_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
+gpio_set_level(LED_PIN, 1);
+ESP_LOGI(TAG, "10 blinks done, LED stays ON");
+
+while (1)
+{
+    vTaskDelay(pdMS_TO_TICKS(1000));   // stay alive, do nothing
+}
+\end{verbatim}
+
+\bigskip
+\noindent\rule{\textwidth}{0.4pt}
+\bigskip
+
+\subsection*{Exercise 4: SOS Pattern}
+\textbf{Task:} Create an SOS pattern: 3 short blinks, 3 long blinks, 3 short blinks, then pause and repeat.
+
+\textbf{Solution:}
+\begin{verbatim}
+static void blink(int on_ms, int off_ms)
+{
+    gpio_set_level(LED_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(on_ms));
+    gpio_set_level(LED_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(off_ms));
+}
+
+void app_main(void)
+{
+    /* ...gpio_config as before... */
+
+    while (1)
+    {
+        for (int i = 0; i < 3; i++) blink(150, 150);   // S
+        vTaskDelay(pdMS_TO_TICKS(300));
+
+        for (int i = 0; i < 3; i++) blink(450, 150);   // O
+        vTaskDelay(pdMS_TO_TICKS(300));
+
+        for (int i = 0; i < 3; i++) blink(150, 150);   // S
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+\end{verbatim}
+\end{document}
