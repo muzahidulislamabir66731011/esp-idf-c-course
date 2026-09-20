@@ -105,7 +105,7 @@ Goal: Understand the ESP32 hardware, the FreeRTOS environment, and basic digital
 | # | Project | Folder | Concepts |
 |---|---|---|---|
 | 1 | Hello ESP32 | phase01/hello_esp | Toolchain setup, serial logging, `ESP_LOG`, `app_main()` lifecycle |
-| 2 | Digital Output | - | GPIO output, push-pull configuration, driving an LED, 3.3V logic |
+| 2 | Digital Output | phase01/digital_output | GPIO output, push-pull configuration, driving an LED, 3.3V logic |
 | 3 | Infinite Loop & Timing | - | FreeRTOS `vTaskDelay()`, blocking vs yielding |
 | 4 | Digital Input | - | Reading buttons, pull-up and pull-down resistors |
 | 5 | Interrupts & Debouncing | - | ISR basics, GPIO interrupts, software debouncing |
